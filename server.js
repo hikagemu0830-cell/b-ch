@@ -280,7 +280,8 @@ function buildUpstreamHeaders(req, upstream, myOrigin) {
   return h;
 }
 
-const DROP_RES = new Set(["content-security-policy", "content-security-policy-report-only", "x-frame-options", "strict-transport-security", "public-key-pins", "report-to", "nel", "cross-origin-embedder-policy", "cross-origin-opener-policy", "cross-origin-resource-policy", "permissions-policy", "alt-svc", "link", "set-cookie", "content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "location", "refresh", "content-location", "clear-site-data"]);
+// ★修正1: DROP_RES から "location" を削除
+const DROP_RES = new Set(["content-security-policy", "content-security-policy-report-only", "x-frame-options", "strict-transport-security", "public-key-pins", "report-to", "nel", "cross-origin-embedder-policy", "cross-origin-opener-policy", "cross-origin-resource-policy", "permissions-policy", "alt-svc", "link", "set-cookie", "content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "refresh", "content-location", "clear-site-data"]);
 
 function corsHeaders(req) {
   const o = req.headers.origin;
@@ -295,10 +296,21 @@ function corsHeaders(req) {
   };
 }
 
+// ★修正2: GitHub等（PJAX/Turbo）が返す特殊ヘッダやLocationをプロキシ用に書き換える
 function responseHeaders(r, req, upstream, myOrigin) {
   const h = {};
   for (const [k, v] of r.headers) {
     if (DROP_RES.has(k) || k.startsWith("access-control-")) continue;
+    
+    if (k === "location" || k === "x-pjax-url" || k === "turbo-location") {
+      try {
+        h[k] = toProxy(new URL(v, upstream).href, myOrigin);
+      } catch {
+        h[k] = v;
+      }
+      continue;
+    }
+    
     h[k] = v;
   }
   Object.assign(h, corsHeaders(req));
@@ -416,13 +428,11 @@ async function handle(req, res) {
   const status = r.status;
   const hdrs = responseHeaders(r, req, upstream, myOrigin);
 
-  // リダイレクト: ステータスを保ったままLocationをProxy側へ
-  const loc = r.headers.get("location");
-  if (loc && status >= 300 && status < 400) {
-    let dest;
-    try { dest = toProxy(new URL(loc, upstream).href, myOrigin); } catch { dest = loc; }
+  // ★修正3: リダイレクト処理の簡略化
+  if (hdrs["location"] && status >= 300 && status < 400) {
     r.body?.cancel().catch(() => {});
-    res.writeHead(status, { ...hdrs, location: dest, "cache-control": "no-store" });
+    hdrs["cache-control"] = "no-store";
+    res.writeHead(status, hdrs);
     return res.end();
   }
 
